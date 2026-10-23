@@ -1,0 +1,10 @@
+bin/
+obj/
+*.bak
+*.patched
+swyf_dump.txt
+qwen_files.txt
+worker_test.txt
+.vs/
+.idea/
+*.user
