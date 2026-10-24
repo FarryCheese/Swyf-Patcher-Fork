@@ -10,11 +10,15 @@ using Mono.Cecil.Cil;
 //   --host-tts / --vanilla-tts         1. Offload all TTS to Lobby Host (default) vs Vanilla per-client TTS
 //   --prebuffer / --instant-speech     2. Wait for full sentence generation (default) vs Instant streaming speech
 //   --gpu / --hybrid / --cpu           3. Hardware mode: GPU (default) vs Hybrid GPU+CPU vs CPU-only
+//   --refresh-backup                   Принудительно обновить .bak из текущих файлов игры (после обновления игры)
+//   --dump                             Дамп нужных типов в swyf_dump.txt (читает оригинал, не патченый файл)
 
 const string GameFolderName = "Scam With Your Friends";
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 Console.InputEncoding = System.Text.Encoding.UTF8;
+
+Opts.RefreshBackup = args.Contains("--refresh-backup");
 
 string game = args.FirstOrDefault(a => !a.StartsWith("--") && Directory.Exists(a)) ?? FindGame();
 if (game == null || !Directory.Exists(game))
@@ -41,8 +45,11 @@ if (testArg != null)
 if (args.Contains("--dump"))
 {
     var sb = new System.Text.StringBuilder();
-    DumpFile(sb, managed, "Assembly-CSharp.dll", t => t.FullName.StartsWith("Kolkata.QwenTts."));
-    DumpFile(sb, managed, "ScriptsAssDef.dll", t => t.Name.Contains("WhisperVc"));
+    DumpFile(sb, managed, "Assembly-CSharp.dll", t =>
+        t.FullName.StartsWith("Kolkata.QwenTts.") ||
+        new[] { "KolkataPlayerVoice", "PocketTtsSingleton", "ScammerWorkspace", "NetworkedCall" }
+            .Any(n => t.FullName == n || t.FullName.StartsWith(n + "/")));
+    DumpFile(sb, managed, "ScriptsAssDef.dll", t => t.Name.Contains("WhisperVc") || t.Name == "WindowsSpeechCompatibility");
     string outPath = Path.GetFullPath("swyf_dump.txt");
     File.WriteAllText(outPath, sb.ToString());
     Console.WriteLine("Dump written to: " + outPath);
@@ -152,8 +159,7 @@ static void RunInteractiveMenu(ref ComputeMode compute, ref SpeechTimingMode tim
 
 static void DumpFile(System.Text.StringBuilder sb, string managedDir, string file, Func<TypeDefinition, bool> filter)
 {
-    string p = Path.Combine(managedDir, file);
-    if (File.Exists(p + ".bak")) p += ".bak"; // always read the original
+    string p = OriginalPath(Path.Combine(managedDir, file)); // read the original, never our patched output
     if (!File.Exists(p)) { sb.AppendLine("##### missing: " + p); return; }
 
     using var resolver = new DefaultAssemblyResolver();
@@ -169,7 +175,7 @@ static void DumpFile(System.Text.StringBuilder sb, string managedDir, string fil
         foreach (var f in t.Fields) sb.AppendLine("  field " + f.FieldType.Name + " " + f.Name);
         foreach (var m in t.Methods.Where(x => x.HasBody))
         {
-            sb.AppendLine("  -- " + m.FullName);
+            sb.AppendLine("  -- " + m.FullName + "   (params: " + string.Join(", ", m.Parameters.Select(x => x.Name)) + ")");
             foreach (var i in m.Body.Instructions)
             {
                 string n = i.OpCode.Name;
@@ -274,14 +280,69 @@ static string FindGame()
     return null;
 }
 
+static string Sha(string p) =>
+    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(p)));
+
+// Hash of the assembly structure (type + method names), ignoring IL bodies.
+// Patching only changes bodies, so a different fingerprint means the game was updated.
+static string Fingerprint(string p)
+{
+    using var ms = new MemoryStream(File.ReadAllBytes(p));
+    using var mod = ModuleDefinition.ReadModule(ms, new ReaderParameters { AssemblyResolver = new DefaultAssemblyResolver() });
+    var sb = new System.Text.StringBuilder();
+    foreach (var t in mod.GetTypes())
+    {
+        sb.AppendLine(t.FullName);
+        foreach (var m in t.Methods) sb.AppendLine("  " + m.FullName);
+        foreach (var f in t.Fields) sb.AppendLine("  F " + f.FullName);
+    }
+    return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sb.ToString())));
+}
+
+// The path that holds the ORIGINAL (unpatched) assembly of the current game version.
+static string OriginalPath(string path)
+{
+    string bak = path + ".bak", mark = path + ".patched.sha256";
+    if (File.Exists(bak) && File.Exists(mark) && File.ReadAllText(mark).Trim() == Sha(path)) return bak;
+    return path;
+}
+
 static bool PatchAssembly(string path, string managedDir, Func<ModuleDefinition, bool> patch)
 {
     Console.WriteLine("\n== " + Path.GetFileName(path));
     if (!File.Exists(path)) { Console.WriteLine("File not found."); return false; }
 
     string bak = path + ".bak";
-    if (!File.Exists(bak)) File.Copy(path, bak);
-    else File.Copy(bak, path, true); // always patch from the original backup!
+    string mark = path + ".patched.sha256";
+    string cur = Sha(path);
+    bool ownOutput = File.Exists(mark) && File.ReadAllText(mark).Trim() == cur;
+
+    if (Opts.RefreshBackup || !File.Exists(bak))
+    {
+        File.Copy(path, bak, true);
+        Console.WriteLine("[INFO] Бэкап создан из текущего файла игры.");
+    }
+    else if (ownOutput)
+    {
+        // current file is our own patched output -> .bak is its source, keep it
+    }
+    else if (Sha(bak) == cur)
+    {
+        // untouched file, identical to the backup
+    }
+    else if (File.Exists(mark) || Fingerprint(bak) != Fingerprint(path))
+    {
+        // file was replaced by the game (Steam update / verify) -> old .bak is stale
+        File.Copy(path, bak, true);
+        Console.WriteLine("[INFO] Игра обновилась: старый .bak устарел, бэкап обновлён из текущего файла.");
+    }
+    else
+    {
+        Console.WriteLine("[INFO] Старый патч без маркера: считаю текущий файл патченой копией .bak. " +
+                          "Если игра обновилась, а патчи не работают — запустите с --refresh-backup.");
+    }
+
+    File.Copy(bak, path, true); // always patch from the original backup
 
     string tmp = path + ".patched";
     bool ok;
@@ -298,6 +359,7 @@ static bool PatchAssembly(string path, string managedDir, Func<ModuleDefinition,
     }
     File.Copy(tmp, path, true);
     File.Delete(tmp);
+    File.WriteAllText(mark, Sha(path));
     return ok;
 }
 
@@ -379,11 +441,32 @@ static bool PatchAssemblyCSharp(ModuleDefinition mod, ComputeMode computeMode, S
             }
         }
     }
+    // WaitUntil deadline: "expires = Time.realtimeSinceStartupAsDouble + 20" (stored in a closure field).
+    // Without this the coroutine gives up after 20 s even if the model is still loading.
+    int expiresN = 0;
+    foreach (var pm in prepMethods)
+    {
+        var ins = pm.Body.Instructions;
+        for (int i = 0; i < ins.Count; i++)
+        {
+            if (ins[i].OpCode != OpCodes.Stfld || ins[i].Operand is not FieldReference ef || ef.Name != "expires") continue;
+            for (int j = Math.Max(0, i - 3); j < i; j++)
+            {
+                if (ins[j].OpCode != OpCodes.Ldc_R8 && ins[j].OpCode != OpCodes.Ldc_R4) continue;
+                double val = ins[j].OpCode == OpCodes.Ldc_R8 ? (double)ins[j].Operand : (float)ins[j].Operand;
+                if (Math.Abs(val - 120.0) > 1e-6)
+                    ins[j].Operand = ins[j].OpCode == OpCodes.Ldc_R8 ? (object)120.0 : (object)120f;
+                expiresN++;
+                break;
+            }
+        }
+    }
     if (prepN == 0)
     {
         prepN = prepMethods.Sum(x => ReplaceNum(x, 20.0, 120.0) + CountNum(x, 120.0));
     }
     ok &= Check("Prepare timeout is 120 s", prepN);
+    ok &= Check("Prepare WaitUntil deadline (expires) is 120 s", expiresN);
 
     // 1b-2. Prompt cancel timeout & firstAudioDeadline -> 300 s
     var promptMethods = single.Methods.Where(x => x.Name == "Prompt" && x.HasBody)
@@ -613,6 +696,12 @@ static bool PatchHostSideTtsOffload(ModuleDefinition mod)
     if (speakMethod == null || speakTrackedMethod == null || warmUpVoiceMethod == null || localizeMethod == null)
     {
         Console.WriteLine($"[FAIL] Required TTS methods not found (speak={speakMethod != null}, tracked={speakTrackedMethod != null}, warmUp={warmUpVoiceMethod != null}, localize={localizeMethod != null})");
+        Console.WriteLine("       PocketTtsSingleton: Speak*/WarmUp*:");
+        foreach (var dm in pocketTts.Methods.Where(x => x.Name.StartsWith("Speak") || x.Name.Contains("WarmUp")))
+            Console.WriteLine("         " + dm.FullName);
+        Console.WriteLine("       KolkataPlayerVoice: *Tts*:");
+        foreach (var dm in playerVoice.Methods.Where(x => x.Name.Contains("Tts")))
+            Console.WriteLine("         " + dm.FullName);
         return false;
     }
 
@@ -626,8 +715,14 @@ static bool PatchHostSideTtsOffload(ModuleDefinition mod)
     else
     {
         var ins = serverSendTts.Body.Instructions;
+        if (serverSendTts.Parameters.Count < 6)
+            Console.WriteLine("[FAIL] ServerSendTts: unexpected signature " + serverSendTts.FullName);
         var stloc0 = ins.FirstOrDefault(i => i.OpCode == OpCodes.Stloc_0);
-        if (stloc0 == null)
+        if (serverSendTts.Parameters.Count < 6)
+        {
+            ok = false;
+        }
+        else if (stloc0 == null)
         {
             Console.WriteLine("[FAIL] stloc.0 not found in ServerSendTts");
             ok = false;
@@ -1021,10 +1116,21 @@ static bool PatchScripts(ModuleDefinition mod, HardwareMode hardwareMode)
     if (hardwareMode == HardwareMode.HybridGpuCpu || hardwareMode == HardwareMode.CpuOnly)
     {
         var compat = mod.GetTypes().FirstOrDefault(x => x.Name == "WindowsSpeechCompatibility");
-        var needsCpu = compat?.Methods.FirstOrDefault(m => m.Name == "NeedsCpuRecognition" && m.HasBody);
+        var needsCpu = compat?.Methods.FirstOrDefault(m => m.Name == "NeedsCpuRecognition" && m.HasBody)
+            // fallback: any static no-arg bool method that looks like a "needs CPU" check
+            ?? compat?.Methods.FirstOrDefault(m => m.HasBody && m.IsStatic && !m.HasParameters &&
+                   m.ReturnType.FullName == "System.Boolean" &&
+                   (m.Name.Contains("Cpu", StringComparison.OrdinalIgnoreCase) && m.Name.Contains("Recogn", StringComparison.OrdinalIgnoreCase)));
         if (needsCpu == null)
         {
             Console.WriteLine("[FAIL] WindowsSpeechCompatibility.NeedsCpuRecognition not found");
+            if (compat != null)
+            {
+                Console.WriteLine("       Кандидаты (static bool без аргументов) в WindowsSpeechCompatibility:");
+                foreach (var cm in compat.Methods.Where(x => x.IsStatic && !x.HasParameters && x.ReturnType.FullName == "System.Boolean"))
+                    Console.WriteLine("         " + cm.FullName);
+            }
+            else Console.WriteLine("       Тип WindowsSpeechCompatibility не найден.");
             ok = false;
         }
         else
@@ -1035,7 +1141,7 @@ static bool PatchScripts(ModuleDefinition mod, HardwareMode hardwareMode)
             var il = needsCpu.Body.GetILProcessor();
             il.Append(il.Create(OpCodes.Ldc_I4_1));
             il.Append(il.Create(OpCodes.Ret));
-            Console.WriteLine("[OK]   WindowsSpeechCompatibility.NeedsCpuRecognition -> true (Speech Recognition offloaded to CPU)");
+            Console.WriteLine("[OK]   WindowsSpeechCompatibility." + needsCpu.Name + " -> true (Speech Recognition offloaded to CPU)");
         }
     }
     else
@@ -1084,6 +1190,8 @@ static void CheckModels()
             : $"[MISSING] {f} - launch the game and wait for the Qwen3 download bar to reach 100%");
     }
 }
+
+static class Opts { public static bool RefreshBackup; }
 
 enum ComputeMode { HostOffload, Vanilla }
 enum SpeechTimingMode { FullPrebuffer, InstantStreaming }
