@@ -38,7 +38,7 @@
 2. Скачайте архив со страницы [Releases](../../releases) и распакуйте в любую удобную папку.
 3. Запустите файл **`PATCH.bat`**.
 4. В открывшемся интерактивном меню настройте нужные параметры (клавишами `1`, `2`, `3`) или просто нажмите **Enter** для применения рекомендуемых настроек:
-   - `[1] Вычисления в лобби` : **ВСЕ НА ХОСТА** / Обычные
+   - `[1] Вычисления в лобби` : **ВСЕ НА ХОСТА** / Обычные (используйте все на хоста, если у вашего друга пк сильно слабее вашего)
    - `[2] Время ответа NPC`   : **Дожидаться полной генерации (без заиканий)** / Сразу по ходу генерации
    - `[3] Режим оборудования` : **Обычная (GPU)** / **Гибрид (GPU+CPU)** / **Только CPU** (Советую использовать обычный вариант, если у вас нет очень сильного процессора, иначе будут проблемы с распознованием речи)
 5. Дождитесь надписи `[OK] Готово!` и запускайте игру.
@@ -98,9 +98,9 @@ Comprehensive IL bytecode patcher and mod for **Scam With Your Friends** (build 
 2. Download the release archive from [Releases](../../releases) and extract it anywhere.
 3. Run **`PATCH.bat`**.
 4. Use the interactive menu to toggle options (`1`, `2`, `3`) or simply press **Enter** to apply recommended defaults:
-   - `[1] Multiplayer Compute` : **ALL ON HOST** / Vanilla
+   - `[1] Multiplayer Compute` : **ALL ON HOST** / Vanilla (have the "all on host"), if your friend’s PC is significantly less powerful than yours)
    - `[2] NPC Response Timing` : **Full sentence pre-buffer** / Instant streaming
-   - `[3] Hardware Processing` : **GPU** / **Hybrid (GPU+CPU)** / **CPU-Only**
+   - `[3] Hardware Processing` : **GPU** / **Hybrid (GPU+CPU)** / **CPU-Only** (I recommend using the standard version unless you have a very powerful processor; otherwise, you may encounter issues with speech recognition.)
 5. Wait for `[OK] Done!` and launch the game.
 
 > **Tip:** If your game is in a non-default library, drag and drop the game folder directly onto `PATCH.bat`.
